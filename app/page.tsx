@@ -67,11 +67,14 @@ type Task = {
   startDate: string
   duration: number
   notes: string
+  completed: boolean
+  completedAt: string | null
   noteEntries: NoteEntry[]
   dayNotes: DayNoteMeta[]
 }
 type PendingNote = { author: string; color: NoteColor; text: string }
 const BLANK_PENDING: PendingNote = { author: '', color: 'purple', text: '' }
+type Meeting = { id: string; name: string; reason: string; date: string; time: string; createdAt: string }
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function parseLocal(ymd: string): Date {
@@ -166,7 +169,7 @@ export default function GanttPage() {
   const [loginError,     setLoginError]     = useState('')
   const [showTaskModal,  setShowTaskModal]  = useState(false)
   const [editingTask,    setEditingTask]    = useState<Task | null>(null)
-  const [form,           setForm]           = useState<{name:string;startDate:string;duration:number|'';notes:string;changeNote:string}>({name:'',startDate:'',duration:5,notes:'',changeNote:''})
+  const [form,           setForm]           = useState<{name:string;startDate:string;duration:number|'';notes:string;changeNote:string;completed:boolean;completedAt:string}>({name:'',startDate:'',duration:5,notes:'',changeNote:'',completed:false,completedAt:''})
   const [openNotes,      setOpenNotes]      = useState<Set<string>>(new Set())
   const [mounted,        setMounted]        = useState(false)
   const [dateFormat,     setDateFormat]     = useState<'short'|'long'>('short')
@@ -178,6 +181,13 @@ export default function GanttPage() {
   const [pendingFiles,   setPendingFiles]   = useState<PendingFile[]>([])
   const [savingEvidence, setSavingEvidence] = useState(false)
   const [previewFile,    setPreviewFile]    = useState<DayNoteFileEntry | PendingFile | null>(null)
+  const [showJuntaModal, setShowJuntaModal] = useState(false)
+  const [juntaForm,      setJuntaForm]      = useState<{ name: string; reason: string; date: string; time: string }>({ name:'', reason:'', date:'', time:'' })
+  const [juntaSaving,    setJuntaSaving]    = useState(false)
+  const [juntaSaved,     setJuntaSaved]     = useState(false)
+  const [showJuntasList, setShowJuntasList] = useState(false)
+  const [meetings,       setMeetings]       = useState<Meeting[]>([])
+  const [meetingsLoading,setMeetingsLoading]= useState(false)
 
   useEffect(() => {
     setMounted(true)
@@ -246,13 +256,13 @@ export default function GanttPage() {
     } else { setLoginError('Contraseña incorrecta.') }
   }
   const handleLogout = () => { setIsLoggedIn(false); sessionStorage.removeItem('gantt_auth') }
-  const openAdd = () => { setEditingTask(null); setForm({name:'',startDate:todayYMD(),duration:5 as number|'',notes:'',changeNote:''}); setShowTaskModal(true) }
-  const openEdit = (t: Task) => { setEditingTask(t); setForm({name:t.name,startDate:t.startDate,duration:t.duration,notes:t.notes,changeNote:''}); setShowTaskModal(true) }
+  const openAdd = () => { setEditingTask(null); setForm({name:'',startDate:todayYMD(),duration:5 as number|'',notes:'',changeNote:'',completed:false,completedAt:''}); setShowTaskModal(true) }
+  const openEdit = (t: Task) => { setEditingTask(t); setForm({name:t.name,startDate:t.startDate,duration:t.duration,notes:t.notes,changeNote:'',completed:t.completed,completedAt:t.completedAt ?? ''}); setShowTaskModal(true) }
   const saveTask = async () => {
     if (!form.name.trim()) return
     const dur = Number(form.duration)
     if (!dur || dur < 1) return
-    const payload = { name: form.name, startDate: form.startDate, duration: dur, notes: form.notes }
+    const payload = { name: form.name, startDate: form.startDate, duration: dur, notes: form.notes, completed: form.completed, completedAt: form.completedAt }
     if (editingTask) {
       await fetch(`/api/tasks/${editingTask.id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -280,6 +290,36 @@ export default function GanttPage() {
     setTasks(prev => prev.filter(t => t.id !== id))
   }
   const toggleNotes = (id: string) => { setOpenNotes(prev => { const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n }) }
+
+  // ── Juntas ───────────────────────────────────────────────────────────────────
+  const openJuntaModal  = () => { setJuntaForm({ name:'', reason:'', date:'', time:'' }); setJuntaSaved(false); setShowJuntaModal(true) }
+  const closeJuntaModal = () => { setShowJuntaModal(false); setJuntaSaved(false) }
+  const saveJunta = async () => {
+    if (juntaSaving || !juntaForm.name.trim() || !juntaForm.reason.trim() || !juntaForm.date || !juntaForm.time) return
+    setJuntaSaving(true)
+    try {
+      await fetch('/api/meetings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(juntaForm),
+      })
+      setJuntaSaved(true)
+    } finally {
+      setJuntaSaving(false)
+    }
+  }
+  const openJuntasList = () => {
+    setShowJuntasList(true)
+    setMeetingsLoading(true)
+    fetch('/api/meetings').then(r => r.json()).then((data: Meeting[]) => {
+      setMeetings(data)
+      setMeetingsLoading(false)
+    }).catch(() => setMeetingsLoading(false))
+  }
+  const deleteMeeting = async (id: string) => {
+    if (!confirm('¿Eliminar esta junta?')) return
+    const res = await fetch(`/api/meetings/${id}`, { method: 'DELETE' })
+    if (res.ok) setMeetings(prev => prev.filter(m => m.id !== id))
+  }
 
   // ── Notes ────────────────────────────────────────────────────────────────────
   const getPending = (id: string): PendingNote => pendingNotes[id] ?? BLANK_PENDING
@@ -408,6 +448,8 @@ export default function GanttPage() {
 
   if (!mounted) return null
 
+  const juntaInvalid = juntaSaving || !juntaForm.name.trim() || !juntaForm.reason.trim() || !juntaForm.date || !juntaForm.time
+
   // Derived widths
   const hdr2H = dateFormat === 'long' ? 90 : 64
   const leftW = W.num + W.name + W.start + W.days + W.end + (isLoggedIn ? W.actions : 0)
@@ -451,12 +493,22 @@ export default function GanttPage() {
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
           {isLoggedIn && (
+            <button onClick={openJuntasList} style={{
+              background:'transparent', color:P.textDim, border:'1px solid #3a3a3a',
+              borderRadius:'7px', padding:'9px 18px', fontSize:'13px', fontWeight:'700', cursor:'pointer',
+            }}>Ver juntas</button>
+          )}
+          {isLoggedIn && (
             <button onClick={openAdd} style={{
               background:`linear-gradient(135deg,${P.gold},${P.goldDark})`,
               color:P.textDark, border:'none', borderRadius:'7px',
               padding:'9px 18px', fontSize:'13px', fontWeight:'700', cursor:'pointer',
             }}>+ Nueva tarea</button>
           )}
+          <button onClick={openJuntaModal} style={{
+            background:'transparent', color:NC.blue.text, border:`1px solid ${NC.blue.border}`,
+            borderRadius:'7px', padding:'9px 18px', fontSize:'13px', fontWeight:'700', cursor:'pointer',
+          }}>Agendar junta</button>
           <button onClick={isLoggedIn ? handleLogout : ()=>setShowLogin(true)} style={{
             background: isLoggedIn ? 'transparent' : `linear-gradient(135deg,${P.gold},${P.goldDark})`,
             color: isLoggedIn ? P.textDim : P.textDark,
@@ -574,6 +626,19 @@ export default function GanttPage() {
                             >
                               {task.name}
                             </span>
+                            {task.completed && (
+                              <span
+                                title={task.completedAt ? `Completada el ${fmtCell(task.completedAt, 'long')}` : 'Completada'}
+                                style={{
+                                  flexShrink:0, marginRight:'8px',
+                                  background:'#16a34a12', border:'1px solid #16a34a88',
+                                  borderRadius:'10px', padding:'2px 7px',
+                                  color:'#4ade80', fontSize:'10px', fontWeight:'600', whiteSpace:'nowrap',
+                                }}
+                              >
+                                ✓ Completada
+                              </span>
+                            )}
                             <button
                               onClick={() => toggleNotes(task.id)}
                               style={{
@@ -814,9 +879,11 @@ export default function GanttPage() {
                                   position:'absolute', top:'8px', bottom:'8px',
                                   left: isFirst ? '2px' : 0,
                                   right: isLast  ? '2px' : 0,
-                                  background:`linear-gradient(135deg,${P.goldLight},${P.gold} 50%,${P.goldDark})`,
+                                  background: task.completed
+                                    ? 'linear-gradient(135deg,#4ade80,#16a34a 50%,#15803d)'
+                                    : `linear-gradient(135deg,${P.goldLight},${P.gold} 50%,${P.goldDark})`,
                                   borderRadius:`${isFirst?'4px':'0'} ${isLast?'4px':'0'} ${isLast?'4px':'0'} ${isFirst?'4px':'0'}`,
-                                  boxShadow:`0 1px 6px rgba(212,175,55,0.3)`,
+                                  boxShadow: task.completed ? '0 1px 6px rgba(22,163,74,0.35)' : `0 1px 6px rgba(212,175,55,0.3)`,
                                 }} />
                               )}
                               {/* Red border + dot for cells with evidence */}
@@ -870,6 +937,89 @@ export default function GanttPage() {
             <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
               <button onClick={handleLogin} style={btnGold(true)}>Entrar</button>
               <button onClick={()=>{setShowLogin(false);setLoginError('');setPassword('')}} style={btnGhost(true)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Agendar junta modal (público) ────────────────────────────────────── */}
+      {showJuntaModal && (
+        <div style={overlay} onClick={closeJuntaModal}>
+          <div style={modal} onClick={e=>e.stopPropagation()}>
+            <div style={{ display:'flex', alignItems:'center', gap:'12px', marginBottom:'24px' }}>
+              <div style={{ width:'3px', height:'26px', background:`linear-gradient(180deg,${NC.blue.text},${NC.blue.border})`, borderRadius:'2px' }} />
+              <h2 style={{ color:NC.blue.text, fontSize:'18px', fontWeight:'700', letterSpacing:'1px' }}>AGENDAR JUNTA</h2>
+            </div>
+            {juntaSaved ? (
+              <>
+                <p style={{ color:'#4ade80', fontSize:'14px', fontWeight:'600' }}>✓ Junta agendada correctamente.</p>
+                <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
+                  <button onClick={closeJuntaModal} style={btnGold(true)}>Cerrar</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <label style={lbl}>Nombre</label>
+                <input value={juntaForm.name} onChange={e=>setJuntaForm(p=>({...p,name:e.target.value}))}
+                  placeholder="Tu nombre" style={inp} autoFocus />
+                <label style={{...lbl,marginTop:'14px'}}>Motivo</label>
+                <textarea value={juntaForm.reason} onChange={e=>setJuntaForm(p=>({...p,reason:e.target.value}))}
+                  placeholder="¿De qué trata la junta?"
+                  style={{...inp,minHeight:'60px',resize:'vertical',fontFamily:'inherit'}} />
+                <label style={{...lbl,marginTop:'14px'}}>Fecha</label>
+                <input type="date" value={juntaForm.date} onChange={e=>setJuntaForm(p=>({...p,date:e.target.value}))} style={inp} />
+                <label style={{...lbl,marginTop:'14px'}}>Hora</label>
+                <input type="time" value={juntaForm.time} onChange={e=>setJuntaForm(p=>({...p,time:e.target.value}))} style={inp} />
+                <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
+                  <button
+                    onClick={saveJunta}
+                    disabled={juntaInvalid}
+                    style={{
+                      ...btnGold(true),
+                      opacity: juntaInvalid ? 0.4 : 1,
+                      cursor: juntaInvalid ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {juntaSaving ? 'Agendando…' : 'Agendar'}
+                  </button>
+                  <button onClick={closeJuntaModal} disabled={juntaSaving} style={{ ...btnGhost(true), opacity: juntaSaving?0.4:1, cursor: juntaSaving?'not-allowed':'pointer' }}>Cancelar</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Ver juntas modal (admin) ─────────────────────────────────────────── */}
+      {showJuntasList && (
+        <div style={overlay} onClick={()=>setShowJuntasList(false)}>
+          <div style={{ ...modal, width:'500px', maxHeight:'80vh', overflowY:'auto' }} onClick={e=>e.stopPropagation()}>
+            <div style={{ display:'flex', alignItems:'center', gap:'12px', marginBottom:'20px' }}>
+              <div style={{ width:'3px', height:'26px', background:`linear-gradient(180deg,${NC.blue.text},${NC.blue.border})`, borderRadius:'2px' }} />
+              <h2 style={{ color:NC.blue.text, fontSize:'18px', fontWeight:'700', letterSpacing:'1px' }}>JUNTAS AGENDADAS</h2>
+            </div>
+            {meetingsLoading ? (
+              <p style={{ color:P.textDim, fontSize:'13px' }}>Cargando…</p>
+            ) : meetings.length === 0 ? (
+              <p style={{ color:P.textDim, fontSize:'13px' }}>No hay juntas agendadas.</p>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                {meetings.map(m => (
+                  <div key={m.id} style={{ background:P.surface3, border:'1px solid #333', borderRadius:'8px', padding:'12px 14px', display:'flex', justifyContent:'space-between', gap:'10px' }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <p style={{ color:P.text, fontSize:'14px', fontWeight:'700' }}>{m.name}</p>
+                      <p style={{ color:P.textDim, fontSize:'12px', marginTop:'2px' }}>{m.reason}</p>
+                      <p style={{ color:NC.blue.text, fontSize:'12px', marginTop:'4px', fontWeight:'600' }}>{fmtCell(m.date,'long')} · {m.time}</p>
+                    </div>
+                    <button onClick={()=>deleteMeeting(m.id)} style={{ background:P.danger, color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'12px', cursor:'pointer', height:'fit-content', flexShrink:0 }}>
+                      Eliminar
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display:'flex', marginTop:'20px' }}>
+              <button onClick={()=>setShowJuntasList(false)} style={btnGhost(true)}>Cerrar</button>
             </div>
           </div>
         </div>
@@ -1098,6 +1248,26 @@ export default function GanttPage() {
                   placeholder="¿Qué cambió y por qué?"
                   style={{...inp, borderColor:'#1d4ed8'}}
                 />
+                <label style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'16px', cursor:'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.completed}
+                    onChange={e => {
+                      const checked = e.target.checked
+                      setForm(p => ({ ...p, completed: checked, completedAt: checked ? (p.completedAt || todayYMD()) : '' }))
+                    }}
+                    style={{ width:'16px', height:'16px', accentColor:'#16a34a', cursor:'pointer' }}
+                  />
+                  <span style={{ fontSize:'13px', color:P.text, fontWeight:'600' }}>Marcar como completada</span>
+                </label>
+                {form.completed && (
+                  <>
+                    <label style={{...lbl,marginTop:'10px'}}>Fecha de finalización</label>
+                    <input type="date" value={form.completedAt}
+                      onChange={e=>setForm(p=>({...p,completedAt:e.target.value}))}
+                      style={{...inp, borderColor:'#16a34a'}} />
+                  </>
+                )}
               </>
             )}
             <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>

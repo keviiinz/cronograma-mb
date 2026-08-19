@@ -12,6 +12,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       startDate: body.startDate,
       duration: Number(body.duration),
       notes: body.notes ?? '',
+      completed: Boolean(body.completed),
+      completedAt: body.completed ? (body.completedAt || null) : null,
     },
   })
   return NextResponse.json(task)

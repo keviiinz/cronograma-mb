@@ -14,6 +14,8 @@ model Task {
   startDate   String
   duration    Int
   notes       String    @default("")
+  completed   Boolean   @default(false)
+  completedAt String?
   noteEntries Note[]
   dayNotes    DayNote[]
   createdAt   DateTime  @default(now())
@@ -52,5 +54,14 @@ model Note {
   text      String
   color     String   @default("purple")
   author    String
+  createdAt DateTime @default(now())
+}
+
+model Meeting {
+  id        String   @id @default(cuid())
+  name      String
+  reason    String
+  date      String
+  time      String
   createdAt DateTime @default(now())
 }
