@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Fragment } from 'react'
+import { useState, useEffect } from 'react'
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const P = {
@@ -37,11 +37,17 @@ const NC = {
 } as const
 type NoteColor = keyof typeof NC
 
-// ── Row heights (px) — MUST be equal in both panels ───────────────────────────
+// ── Row heights (px) ──────────────────────────────────────────────────────────
 const ROW_H   = 42
-const NOTES_H = 260
 const HDR1_H  = 24
 const DAY_COL = 32
+
+// ── Task name truncation ────────────────────────────────────────────────────
+const NAME_MAX_CHARS = 26
+function truncateName(name: string): { text: string; truncated: boolean } {
+  if (name.length <= NAME_MAX_CHARS) return { text: name, truncated: false }
+  return { text: name.slice(0, NAME_MAX_CHARS).trimEnd() + '…', truncated: true }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type NoteEntry = {
@@ -170,7 +176,10 @@ export default function GanttPage() {
   const [showTaskModal,  setShowTaskModal]  = useState(false)
   const [editingTask,    setEditingTask]    = useState<Task | null>(null)
   const [form,           setForm]           = useState<{name:string;startDate:string;duration:number|'';notes:string;changeNote:string;completed:boolean;completedAt:string}>({name:'',startDate:'',duration:5,notes:'',changeNote:'',completed:false,completedAt:''})
-  const [openNotes,      setOpenNotes]      = useState<Set<string>>(new Set())
+  const [expandedNames,  setExpandedNames]  = useState<Set<string>>(new Set())
+  const [showDateCols,   setShowDateCols]   = useState(false)
+  const [infoTaskId,     setInfoTaskId]     = useState<string | null>(null)
+  const [colorMenuOpen,  setColorMenuOpen]  = useState(false)
   const [mounted,        setMounted]        = useState(false)
   const [dateFormat,     setDateFormat]     = useState<'short'|'long'>('short')
   const [activeDayCell,  setActiveDayCell]  = useState<{ task: Task; date: string } | null>(null)
@@ -289,7 +298,10 @@ export default function GanttPage() {
     await fetch(`/api/tasks/${id}`, { method: 'DELETE' })
     setTasks(prev => prev.filter(t => t.id !== id))
   }
-  const toggleNotes = (id: string) => { setOpenNotes(prev => { const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n }) }
+  const toggleNameExpanded = (id: string) => { setExpandedNames(prev => { const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n }) }
+  const infoTask = tasks.find(t => t.id === infoTaskId) ?? null
+  const openInfoModal = (id: string) => { setInfoTaskId(id); setColorMenuOpen(false) }
+  const closeInfoModal = () => { setInfoTaskId(null); setColorMenuOpen(false) }
 
   // ── Juntas ───────────────────────────────────────────────────────────────────
   const openJuntaModal  = () => { setJuntaForm({ name:'', reason:'', date:'', time:'' }); setJuntaSaved(false); setShowJuntaModal(true) }
@@ -452,7 +464,29 @@ export default function GanttPage() {
 
   // Derived widths
   const hdr2H = dateFormat === 'long' ? 90 : 64
-  const leftW = W.num + W.name + W.start + W.days + W.end + (isLoggedIn ? W.actions : 0)
+  const leftW = W.num + W.name + (showDateCols ? W.start + W.days + W.end : 0) + (isLoggedIn ? W.actions : 0)
+  const totalW = leftW + dayColumns.length * DAY_COL
+  // Task info and gantt live in ONE table so their rows can never drift apart.
+  // The info columns are pinned with position:sticky, which needs a left offset
+  // per column (the sum of the widths of every info column before it).
+  const OFF = {
+    num:     0,
+    name:    W.num,
+    start:   W.num + W.name,
+    days:    W.num + W.name + W.start,
+    end:     W.num + W.name + W.start + W.days,
+    actions: W.num + W.name + (showDateCols ? W.start + W.days + W.end : 0),
+  }
+  const lastInfoCol = isLoggedIn ? 'actions' : showDateCols ? 'end' : 'name'
+  const infoBorder = (key: string) => key === lastInfoCol ? `2px solid ${P.gold}` : `1px solid #2a2a2a`
+  // left pins a column against horizontal scroll, top pins a heading against
+  // vertical scroll; heading cells that do both are the table's frozen corner.
+  const pin = (left: number | null, top: number | null, z: number): React.CSSProperties => ({
+    position: 'sticky',
+    ...(left !== null ? { left: `${left}px` } : {}),
+    ...(top  !== null ? { top:  `${top}px`  } : {}),
+    zIndex: z,
+  })
 
   // Header cell style for left panel
   const lHdr = (extra?: React.CSSProperties): React.CSSProperties => ({
@@ -470,7 +504,9 @@ export default function GanttPage() {
   })
 
   return (
-    <div style={{ background:P.bg, minHeight:'100vh', fontFamily:"'Segoe UI',Arial,sans-serif", color:P.text }}>
+    // Full-height column: the gantt is the only scroll container, so header,
+    // legend and table headings stay put and only the task rows move.
+    <div style={{ background:P.bg, height:'100vh', display:'flex', flexDirection:'column', fontFamily:"'Segoe UI',Arial,sans-serif", color:P.text }}>
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header style={{
@@ -478,7 +514,7 @@ export default function GanttPage() {
         borderBottom:`2px solid ${P.gold}`,
         padding:'0 28px',
         display:'flex', alignItems:'center', justifyContent:'space-between',
-        minHeight:'68px', gap:'12px',
+        minHeight:'68px', gap:'12px', flexShrink:0,
       }}>
         <div style={{ display:'flex', alignItems:'center', gap:'16px' }}>
           <div style={{ width:'4px', height:'40px', background:`linear-gradient(180deg,${P.goldLight},${P.goldDark})`, borderRadius:'2px', flexShrink:0 }} />
@@ -524,7 +560,7 @@ export default function GanttPage() {
       <div style={{
         background:P.surface, borderBottom:`1px solid ${P.border}`,
         padding:'9px 28px', display:'flex', flexWrap:'wrap',
-        gap:'6px 22px', alignItems:'center',
+        gap:'6px 22px', alignItems:'center', flexShrink:0,
       }}>
         <span style={{ fontSize:'12px', color:P.textDim, marginRight:'6px' }}>
           {tasks.length} {tasks.length===1?'tarea':'tareas'}
@@ -564,254 +600,35 @@ export default function GanttPage() {
         </div>
       </div>
 
-      {/* ── Two-panel Gantt ────────────────────────────────────────────────── */}
-      <div style={{ padding:'16px 20px 32px' }}>
-        <div style={{
-          display:'flex',
-          border:`1px solid #2a2a2a`,
-          borderRadius:'6px',
-          overflow:'hidden',
-        }}>
-
-          {/* ══ LEFT PANEL — task info (no scroll) ══════════════════════════ */}
+      {/* ── Gantt — one table: info columns pinned, headings pinned, rows scroll ── */}
+      <div style={{ flex:1, minHeight:0, padding:'16px 20px 20px' }}>
+        <div style={{ position:'relative', height:'100%' }}>
           <div style={{
-            flexShrink: 0,
-            width: `${leftW}px`,
-            borderRight: `2px solid ${P.gold}`,
-            overflow: 'hidden',
+            height:'100%',
+            border:`1px solid #2a2a2a`,
+            borderRadius:'6px',
+            overflow:'auto',
           }}>
-            <table style={{ borderCollapse:'separate', borderSpacing:0, tableLayout:'fixed', width:`${leftW}px` }}>
+            <table style={{ borderCollapse:'separate', borderSpacing:0, tableLayout:'fixed', width:`${totalW}px` }}>
               <colgroup>
                 <col style={{ width:`${W.num}px` }} />
                 <col style={{ width:`${W.name}px` }} />
-                <col style={{ width:`${W.start}px` }} />
-                <col style={{ width:`${W.days}px` }} />
-                <col style={{ width:`${W.end}px` }} />
+                {showDateCols && <>
+                  <col style={{ width:`${W.start}px` }} />
+                  <col style={{ width:`${W.days}px` }} />
+                  <col style={{ width:`${W.end}px` }} />
+                </>}
                 {isLoggedIn && <col style={{ width:`${W.actions}px` }} />}
+                {dayColumns.map(y => <col key={y} style={{ width:`${DAY_COL}px` }} />)}
               </colgroup>
               <thead>
                 <tr style={{ height:`${HDR1_H}px` }}>
-                  <th colSpan={isLoggedIn ? 6 : 5} style={{ background:'#181600', borderBottom:`1px solid #252500`, borderRight:`1px solid #2a2a2a`, padding:0 }} />
-                </tr>
-                <tr style={{ height:`${hdr2H}px` }}>
-                  <th style={lHdr({ textAlign:'center', fontSize:'11px', color:P.textDim })}>#</th>
-                  <th style={lHdr({ textAlign:'left', paddingLeft:'14px' })}>Actividad / Tarea</th>
-                  <th style={lHdr({ textAlign:'center' })}>Inicio</th>
-                  <th style={lHdr({ textAlign:'center', fontSize:'11px' })}>Días H.</th>
-                  <th style={lHdr({ textAlign:'center', borderRight: isLoggedIn ? `1px solid #2a2a2a` : 'none' })}>Fin</th>
-                  {isLoggedIn && <th style={lHdr({ textAlign:'center', borderRight:'none' })}>Acciones</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {tasks.map((task, idx) => {
-                  const notesOpen = openNotes.has(task.id)
-                  const rowBg = idx % 2 === 0 ? P.rowEven : P.rowOdd
-                  const endYMD = endDateOf(task.startDate, task.duration)
-                  const num = String(idx+1).padStart(2,'0')
-                  const pending = getPending(task.id)
-                  const noteCount = task.noteEntries.length
-                  return (
-                    <Fragment key={task.id}>
-                      <tr style={{ height:`${ROW_H}px` }}>
-                        {/* # */}
-                        <td style={lCell(rowBg, { textAlign:'center', fontSize:'12px', color:P.textDim })}>{num}</td>
-
-                        {/* Task name + notes button */}
-                        <td style={lCell(rowBg, { padding:0 })}>
-                          <div style={{ display:'flex', alignItems:'center', height:`${ROW_H}px` }}>
-                            <div style={{ width:'3px', height:'100%', background:`linear-gradient(180deg,${P.gold}99,${P.goldDark}33)`, flexShrink:0 }} />
-                            <span
-                              title={task.name}
-                              style={{ fontSize:'14px', fontWeight:'600', color:P.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, padding:'0 8px' }}
-                            >
-                              {task.name}
-                            </span>
-                            {task.completed && (
-                              <span
-                                title={task.completedAt ? `Completada el ${fmtCell(task.completedAt, 'long')}` : 'Completada'}
-                                style={{
-                                  flexShrink:0, marginRight:'8px',
-                                  background:'#16a34a12', border:'1px solid #16a34a88',
-                                  borderRadius:'10px', padding:'2px 7px',
-                                  color:'#4ade80', fontSize:'10px', fontWeight:'600', whiteSpace:'nowrap',
-                                }}
-                              >
-                                ✓ Completada
-                              </span>
-                            )}
-                            <button
-                              onClick={() => toggleNotes(task.id)}
-                              style={{
-                                flexShrink:0, marginRight:'8px',
-                                background: notesOpen ? '#7c3aed25' : noteCount>0 ? '#7c3aed12' : 'transparent',
-                                border:`1px solid ${notesOpen||noteCount>0 ? '#7c3aed88' : '#333'}`,
-                                borderRadius:'10px', padding:'2px 7px',
-                                color: notesOpen||noteCount>0 ? '#7c3aed' : P.textDim,
-                                fontSize:'10px', fontWeight:'600', cursor:'pointer', whiteSpace:'nowrap',
-                              }}
-                            >
-                              {notesOpen ? '▼' : '▶'} {noteCount > 0 ? noteCount : ''} Notas
-                            </button>
-                          </div>
-                        </td>
-
-                        {/* Start */}
-                        <td style={lCell(rowBg, { textAlign:'center', fontSize: dateFormat==='long'?'11px':'13px', color:P.textDim, whiteSpace:'nowrap' })}>
-                          {fmtCell(task.startDate, dateFormat)}
-                        </td>
-
-                        {/* Days */}
-                        <td style={lCell(rowBg, { textAlign:'center', fontSize:'13px', color:P.gold, fontWeight:'700' })}>
-                          {task.duration}
-                        </td>
-
-                        {/* End */}
-                        <td style={lCell(rowBg, { textAlign:'center', fontSize: dateFormat==='long'?'11px':'13px', color:P.textDim, whiteSpace:'nowrap', borderRight: isLoggedIn ? `1px solid #2a2a2a` : 'none' })}>
-                          {fmtCell(endYMD, dateFormat)}
-                        </td>
-
-                        {/* Actions */}
-                        {isLoggedIn && (
-                          <td style={lCell(rowBg, { textAlign:'center', borderRight:'none' })}>
-                            <div style={{ display:'flex', gap:'6px', justifyContent:'center' }}>
-                              <button onClick={()=>openEdit(task)} style={{ background:P.surface3, color:P.text, border:`1px solid #3a3a3a`, borderRadius:'4px', padding:'4px 10px', fontSize:'12px', cursor:'pointer' }}>
-                                Editar
-                              </button>
-                              <button onClick={()=>deleteTask(task.id)} style={{ background:P.danger, color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'12px', cursor:'pointer' }}>
-                                Eliminar
-                              </button>
-                            </div>
-                          </td>
-                        )}
-                      </tr>
-
-                      {/* Notes row */}
-                      {notesOpen && (
-                        <tr style={{ height:`${NOTES_H}px` }}>
-                          <td colSpan={isLoggedIn ? 6 : 5} style={{
-                            background: P.notesBg,
-                            height:`${NOTES_H}px`,
-                            borderBottom:`1px solid #2a2a2a`,
-                            borderLeft:`3px solid #7c3aed`,
-                            padding:0, verticalAlign:'top', overflow:'hidden',
-                          }}>
-                            <div style={{ display:'flex', flexDirection:'column', height:`${NOTES_H}px`, padding:'8px 12px 6px', boxSizing:'border-box' }}>
-
-                              {/* Task description (from edit form) */}
-                              {task.notes && (
-                                <div style={{ flexShrink:0, fontSize:'11px', color:'#888', borderBottom:'1px solid #222', paddingBottom:'5px', marginBottom:'5px', overflow:'hidden', maxHeight:'32px', display:'flex', gap:'6px', alignItems:'flex-start' }}>
-                                  <span style={{ flexShrink:0, color:'#555' }}>📋</span>
-                                  <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{task.notes}</span>
-                                </div>
-                              )}
-
-                              {/* Note entries */}
-                              <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', gap:'4px', paddingRight:'2px' }}>
-                                {task.noteEntries.length === 0 && !task.notes && (
-                                  <p style={{ margin:'6px 0', fontSize:'12px', color:'#404040', fontStyle:'italic' }}>
-                                    Sin notas aún. Sé el primero en dejar una.
-                                  </p>
-                                )}
-                                {task.noteEntries.map(n => {
-                                  const nc = NC[n.color as NoteColor] ?? NC.purple
-                                  return (
-                                    <div key={n.id} style={{
-                                      borderLeft:`3px solid ${nc.accent}`,
-                                      background: nc.bg,
-                                      borderRadius:'0 4px 4px 0',
-                                      padding:'4px 8px',
-                                      position:'relative',
-                                      flexShrink:0,
-                                    }}>
-                                      <div style={{ fontSize:'10px', color:'#555', marginBottom:'2px', paddingRight:'20px' }}>
-                                        <span style={{ color: nc.accent, fontWeight:'700' }}>{n.author}</span>
-                                        {' · '}{fmtNoteDate(n.createdAt)}
-                                        <span style={{ marginLeft:'5px', fontSize:'9px', color:'#3a3a3a', fontStyle:'italic' }}>{nc.label}</span>
-                                      </div>
-                                      <div style={{ fontSize:'12px', color: nc.text, lineHeight:1.4 }}>{n.text}</div>
-                                      {isLoggedIn && (
-                                        <button
-                                          onClick={() => deleteNote(task.id, n.id)}
-                                          style={{ position:'absolute', top:'4px', right:'6px', background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'11px', lineHeight:1, padding:'0 2px' }}
-                                          title="Eliminar nota"
-                                        >✕</button>
-                                      )}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-
-                              {/* Add note form */}
-                              <div style={{ flexShrink:0, borderTop:'1px solid #222', paddingTop:'6px', display:'flex', gap:'5px', alignItems:'center' }}>
-                                {!isLoggedIn && (
-                                  <input
-                                    placeholder="Tu nombre *"
-                                    value={pending.author}
-                                    onChange={e => setPending(task.id, { author: e.target.value })}
-                                    style={{ width:'86px', background:'#0c0c10', border:'1px solid #333', borderRadius:'4px', color:P.text, fontSize:'11px', padding:'4px 6px', outline:'none', flexShrink:0 }}
-                                  />
-                                )}
-                                {/* Color picker dots */}
-                                <div style={{ display:'flex', gap:'3px', flexShrink:0 }}>
-                                  {(Object.keys(NC) as NoteColor[]).map(key => (
-                                    <button
-                                      key={key}
-                                      onClick={() => setPending(task.id, { color: key })}
-                                      title={NC[key].label}
-                                      style={{
-                                        width:'13px', height:'13px', borderRadius:'50%',
-                                        background: NC[key].accent,
-                                        border: pending.color === key ? '2px solid #fff' : '2px solid transparent',
-                                        cursor:'pointer', padding:0, flexShrink:0,
-                                      }}
-                                    />
-                                  ))}
-                                </div>
-                                <input
-                                  placeholder={isLoggedIn ? 'Escribe una nota...' : 'Escribe una nota... (Enter para enviar)'}
-                                  value={pending.text}
-                                  onChange={e => setPending(task.id, { text: e.target.value })}
-                                  onKeyDown={e => e.key === 'Enter' && addNote(task)}
-                                  style={{ flex:1, background:'#0c0c10', border:'1px solid #333', borderRadius:'4px', color:P.text, fontSize:'11px', padding:'4px 7px', outline:'none', minWidth:0 }}
-                                />
-                                <button
-                                  onClick={() => addNote(task)}
-                                  title="Agregar nota"
-                                  style={{ background:'#7c3aed', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'12px', fontWeight:'700', cursor:'pointer', flexShrink:0 }}
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
-            </table>
-
-            {tasks.length === 0 && (
-              <div style={{ padding:'50px 20px', textAlign:'center', color:P.textDim }}>
-                <p style={{ fontSize:'15px', marginBottom:'18px' }}>No hay tareas.</p>
-                {isLoggedIn && <button onClick={openAdd} style={btnGold()}>+ Agregar tarea</button>}
-              </div>
-            )}
-          </div>
-
-          {/* ══ RIGHT PANEL — gantt (scrollable) ════════════════════════════ */}
-          <div style={{ flex:1, overflowX:'auto', minWidth:0 }}>
-            <table style={{ borderCollapse:'separate', borderSpacing:0, tableLayout:'fixed' }}>
-              <colgroup>
-                {dayColumns.map(y => <col key={y} style={{ width:`${DAY_COL}px`, minWidth:`${DAY_COL}px` }} />)}
-              </colgroup>
-              <thead>
-                <tr style={{ height:`${HDR1_H}px` }}>
+                  <th colSpan={2 + (showDateCols ? 3 : 0) + (isLoggedIn ? 1 : 0)} style={{ ...pin(0, 0, 5), background:'#181600', borderBottom:`1px solid #252500`, borderRight:`2px solid ${P.gold}`, padding:0 }} />
                   {monthGroups.map(grp => {
                     const even = isEvenMonth(grp.firstYmd)
                     return (
                       <th key={grp.firstYmd} colSpan={grp.count} style={{
+                        ...pin(null, 0, 4),
                         background: even ? '#1f1f1f' : '#231f10',
                         color: even ? '#7a7a7a' : '#b09840',
                         fontSize:'10px', fontWeight:'700', textAlign:'center',
@@ -825,12 +642,21 @@ export default function GanttPage() {
                   })}
                 </tr>
                 <tr style={{ height:`${hdr2H}px` }}>
+                  <th style={lHdr({ ...pin(OFF.num, HDR1_H, 5), textAlign:'center', fontSize:'11px', color:P.textDim, borderRight: infoBorder('num') })}>#</th>
+                  <th style={lHdr({ ...pin(OFF.name, HDR1_H, 5), textAlign:'left', paddingLeft:'14px', borderRight: infoBorder('name') })}>Actividad / Tarea</th>
+                  {showDateCols && <>
+                    <th style={lHdr({ ...pin(OFF.start, HDR1_H, 5), textAlign:'center', borderRight: infoBorder('start') })}>Inicio</th>
+                    <th style={lHdr({ ...pin(OFF.days, HDR1_H, 5), textAlign:'center', fontSize:'11px', borderRight: infoBorder('days') })}>Días H.</th>
+                    <th style={lHdr({ ...pin(OFF.end, HDR1_H, 5), textAlign:'center', borderRight: infoBorder('end') })}>Fin</th>
+                  </>}
+                  {isLoggedIn && <th style={lHdr({ ...pin(OFF.actions, HDR1_H, 5), textAlign:'center', borderRight: infoBorder('actions') })}>Acciones</th>}
                   {dayColumns.map(ymd => {
                     const today   = isToday(ymd)
                     const weekend = isWeekend(ymd)
                     const even    = isEvenMonth(ymd)
                     return (
                       <th key={ymd} style={{
+                        ...pin(null, HDR1_H, 4),
                         background: today ? P.todayBg : weekend
                           ? (even ? P.mAWknd : P.mBWknd)
                           : (even ? P.mA     : P.mB),
@@ -851,72 +677,183 @@ export default function GanttPage() {
               </thead>
               <tbody>
                 {tasks.map((task, idx) => {
-                  const notesOpen = openNotes.has(task.id)
-                  const rowBg     = idx % 2 === 0 ? P.rowEven : P.rowOdd
+                  const rowBg = idx % 2 === 0 ? P.rowEven : P.rowOdd
+                  const endYMD = endDateOf(task.startDate, task.duration)
+                  const num = String(idx+1).padStart(2,'0')
+                  const noteCount = task.noteEntries.length
+                  const nameExpanded = expandedNames.has(task.id)
+                  const { text: shortName, truncated } = truncateName(task.name)
                   return (
-                    <Fragment key={task.id}>
-                      <tr style={{ height:`${ROW_H}px` }}>
-                        {dayColumns.map((ymd, i) => {
-                          const active    = isActive(task, ymd)
-                          const today     = isToday(ymd)
-                          const hasNote   = hasDayNote(task, ymd)
-                          const isFirst   = active && (i===0 || !isActive(task, dayColumns[i-1]))
-                          const isLast    = active && (i===dayColumns.length-1 || !isActive(task, dayColumns[i+1]))
-                          const clickable = active && (isLoggedIn || hasNote)
-                          return (
-                            <td key={ymd}
-                              onClick={() => clickable && openDayCell(task, ymd)}
-                              style={{
-                                height:`${ROW_H}px`, padding:0,
-                                background: cellBg(ymd),
-                                borderBottom:`1px solid #222`,
-                                borderRight:`1px solid #222`,
-                                position:'relative', overflow:'hidden',
-                                cursor: clickable ? 'pointer' : 'default',
-                              }}>
-                              {active && (
-                                <div style={{
-                                  position:'absolute', top:'8px', bottom:'8px',
-                                  left: isFirst ? '2px' : 0,
-                                  right: isLast  ? '2px' : 0,
-                                  background: task.completed
-                                    ? 'linear-gradient(135deg,#4ade80,#16a34a 50%,#15803d)'
-                                    : `linear-gradient(135deg,${P.goldLight},${P.gold} 50%,${P.goldDark})`,
-                                  borderRadius:`${isFirst?'4px':'0'} ${isLast?'4px':'0'} ${isLast?'4px':'0'} ${isFirst?'4px':'0'}`,
-                                  boxShadow: task.completed ? '0 1px 6px rgba(22,163,74,0.35)' : `0 1px 6px rgba(212,175,55,0.3)`,
-                                }} />
-                              )}
-                              {/* Red border + dot for cells with evidence */}
-                              {hasNote && (
-                                <>
-                                  <div style={{ position:'absolute', inset:0, boxShadow:'inset 0 0 0 2px #ef4444', zIndex:2, pointerEvents:'none' }} />
-                                  <div style={{ position:'absolute', top:3, right:3, width:5, height:5, borderRadius:'50%', background:'#ef4444', zIndex:3 }} />
-                                </>
-                              )}
-                              {today && (
-                                <div style={{ position:'absolute', top:0, bottom:0, left:'50%', width:'1px', background:P.todayLine, zIndex:1 }} />
-                              )}
-                            </td>
-                          )
-                        })}
-                      </tr>
+                    <tr key={task.id} style={{ height:`${ROW_H}px`, cursor:'pointer' }} onClick={() => openInfoModal(task.id)}>
+                      {/* # */}
+                      <td style={lCell(rowBg, { ...pin(OFF.num, null, 2), textAlign:'center', fontSize:'12px', color:P.textDim, borderRight: infoBorder('num') })}>{num}</td>
 
-                      {notesOpen && (
-                        <tr style={{ height:`${NOTES_H}px` }}>
-                          <td colSpan={dayColumns.length} style={{
-                            height:`${NOTES_H}px`,
-                            background: P.notesBg,
-                            borderBottom:`1px solid #222`,
-                          }} />
-                        </tr>
+                      {/* Task name — the accent bar is absolute so the row is free to
+                          grow when an expanded name wraps onto more lines. */}
+                      <td style={lCell(rowBg, { ...pin(OFF.name, null, 2), padding:0, borderRight: infoBorder('name') })}>
+                        <div style={{ position:'absolute', top:0, bottom:0, left:0, width:'3px', background:`linear-gradient(180deg,${P.gold}99,${P.goldDark}33)` }} />
+                        <div style={{ display:'flex', alignItems:'center', paddingLeft:'3px' }}>
+                          <span
+                            title={task.name}
+                            style={{
+                              fontSize:'14px', fontWeight:'600', color:P.text, flex:1, padding:'8px',
+                              whiteSpace: nameExpanded ? 'normal' : 'nowrap',
+                              overflow: nameExpanded ? 'visible' : 'hidden',
+                              textOverflow: nameExpanded ? 'clip' : 'ellipsis',
+                              wordBreak: nameExpanded ? 'break-word' : 'normal',
+                            }}
+                          >
+                            {nameExpanded ? task.name : shortName}
+                          </span>
+                          {truncated && (
+                            <button
+                              onClick={e => { e.stopPropagation(); toggleNameExpanded(task.id) }}
+                              title={nameExpanded ? 'Contraer nombre' : 'Ver nombre completo'}
+                              style={{
+                                flexShrink:0, marginRight:'6px', background:'transparent', border:'none',
+                                color:P.gold, cursor:'pointer', fontSize:'13px', fontWeight:'700',
+                                padding:'2px 4px', lineHeight:1,
+                                transform: nameExpanded ? 'rotate(90deg)' : 'none', transition:'transform .15s',
+                              }}
+                            >›</button>
+                          )}
+                          {task.completed && (
+                            <span
+                              title={task.completedAt ? `Completada el ${fmtCell(task.completedAt, 'long')}` : 'Completada'}
+                              style={{
+                                flexShrink:0, marginRight:'8px',
+                                background:'#16a34a12', border:'1px solid #16a34a88',
+                                borderRadius:'10px', padding:'2px 7px',
+                                color:'#4ade80', fontSize:'10px', fontWeight:'600', whiteSpace:'nowrap',
+                              }}
+                            >
+                              ✓ Completada
+                            </span>
+                          )}
+                          {noteCount > 0 && (
+                            <span
+                              title="Ver notas"
+                              style={{
+                                flexShrink:0, marginRight:'8px',
+                                background:'#7c3aed12', border:'1px solid #7c3aed88',
+                                borderRadius:'10px', padding:'2px 7px',
+                                color:'#7c3aed', fontSize:'10px', fontWeight:'600', whiteSpace:'nowrap',
+                              }}
+                            >
+                              {noteCount} Notas
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {showDateCols && <>
+                        {/* Start */}
+                        <td style={lCell(rowBg, { ...pin(OFF.start, null, 2), textAlign:'center', fontSize: dateFormat==='long'?'11px':'13px', color:P.textDim, whiteSpace:'nowrap', borderRight: infoBorder('start') })}>
+                          {fmtCell(task.startDate, dateFormat)}
+                        </td>
+
+                        {/* Days */}
+                        <td style={lCell(rowBg, { ...pin(OFF.days, null, 2), textAlign:'center', fontSize:'13px', color:P.gold, fontWeight:'700', borderRight: infoBorder('days') })}>
+                          {task.duration}
+                        </td>
+
+                        {/* End */}
+                        <td style={lCell(rowBg, { ...pin(OFF.end, null, 2), textAlign:'center', fontSize: dateFormat==='long'?'11px':'13px', color:P.textDim, whiteSpace:'nowrap', borderRight: infoBorder('end') })}>
+                          {fmtCell(endYMD, dateFormat)}
+                        </td>
+                      </>}
+
+                      {/* Actions */}
+                      {isLoggedIn && (
+                        <td style={lCell(rowBg, { ...pin(OFF.actions, null, 2), textAlign:'center', borderRight: infoBorder('actions') })} onClick={e => e.stopPropagation()}>
+                          <div style={{ display:'flex', gap:'6px', justifyContent:'center' }}>
+                            <button onClick={()=>openEdit(task)} style={{ background:P.surface3, color:P.text, border:`1px solid #3a3a3a`, borderRadius:'4px', padding:'4px 10px', fontSize:'12px', cursor:'pointer' }}>
+                              Editar
+                            </button>
+                            <button onClick={()=>deleteTask(task.id)} style={{ background:P.danger, color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'12px', cursor:'pointer' }}>
+                              Eliminar
+                            </button>
+                          </div>
+                        </td>
                       )}
-                    </Fragment>
+                      {/* Day cells — zIndex 0 confines their own stacking (the bar,
+                          evidence outline and today line use z-index 1-3) below the
+                          pinned info columns. */}
+                      {dayColumns.map((ymd, i) => {
+                        const active    = isActive(task, ymd)
+                        const today     = isToday(ymd)
+                        const hasNote   = hasDayNote(task, ymd)
+                        const isFirst   = active && (i===0 || !isActive(task, dayColumns[i-1]))
+                        const isLast    = active && (i===dayColumns.length-1 || !isActive(task, dayColumns[i+1]))
+                        const clickable = active && (isLoggedIn || hasNote)
+                        return (
+                          <td key={ymd}
+                            onClick={e => { if (clickable) { e.stopPropagation(); openDayCell(task, ymd) } }}
+                            style={{
+                              padding:0,
+                              background: cellBg(ymd),
+                              borderBottom:`1px solid #222`,
+                              borderRight:`1px solid #222`,
+                              position:'relative', zIndex:0, overflow:'hidden',
+                              cursor: clickable ? 'pointer' : 'default',
+                            }}>
+                            {active && (
+                              <div style={{
+                                position:'absolute', top:'8px', bottom:'8px',
+                                left: isFirst ? '2px' : 0,
+                                right: isLast  ? '2px' : 0,
+                                background: task.completed
+                                  ? 'linear-gradient(135deg,#4ade80,#16a34a 50%,#15803d)'
+                                  : `linear-gradient(135deg,${P.goldLight},${P.gold} 50%,${P.goldDark})`,
+                                borderRadius:`${isFirst?'4px':'0'} ${isLast?'4px':'0'} ${isLast?'4px':'0'} ${isFirst?'4px':'0'}`,
+                                boxShadow: task.completed ? '0 1px 6px rgba(22,163,74,0.35)' : `0 1px 6px rgba(212,175,55,0.3)`,
+                              }} />
+                            )}
+                            {/* Red border + dot for cells with evidence */}
+                            {hasNote && (
+                              <>
+                                <div style={{ position:'absolute', inset:0, boxShadow:'inset 0 0 0 2px #ef4444', zIndex:2, pointerEvents:'none' }} />
+                                <div style={{ position:'absolute', top:3, right:3, width:5, height:5, borderRadius:'50%', background:'#ef4444', zIndex:3 }} />
+                              </>
+                            )}
+                            {today && (
+                              <div style={{ position:'absolute', top:0, bottom:0, left:'50%', width:'1px', background:P.todayLine, zIndex:1 }} />
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
                   )
                 })}
               </tbody>
             </table>
+
+            {tasks.length === 0 && (
+              <div style={{ padding:'50px 20px', textAlign:'center', color:P.textDim }}>
+                <p style={{ fontSize:'15px', marginBottom:'18px' }}>No hay tareas.</p>
+                {isLoggedIn && <button onClick={openAdd} style={btnGold()}>+ Agregar tarea</button>}
+              </div>
+            )}
           </div>
 
+          {/* Dates toggle — floats on the divider, outside the scroll container
+              so it stays put while the rows scroll. */}
+          <button
+            onClick={() => setShowDateCols(v => !v)}
+            title={showDateCols ? 'Ocultar fechas' : 'Mostrar fechas'}
+            style={{
+              position:'absolute', left:`${leftW + 1}px`, top:'50%',
+              transform:'translate(-50%,-50%)',
+              width:'26px', height:'26px', borderRadius:'50%',
+              background:P.surface2, border:`1px solid ${P.goldDark}`,
+              color:P.gold, cursor:'pointer', padding:0,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              fontSize:'13px', fontWeight:'700', lineHeight:1,
+              boxShadow:'0 2px 10px rgba(0,0,0,0.55)', zIndex:10,
+            }}
+          >
+            {showDateCols ? '‹' : '›'}
+          </button>
         </div>
       </div>
 
@@ -937,6 +874,143 @@ export default function GanttPage() {
             <div style={{ display:'flex', gap:'10px', marginTop:'22px' }}>
               <button onClick={handleLogin} style={btnGold(true)}>Entrar</button>
               <button onClick={()=>{setShowLogin(false);setLoginError('');setPassword('')}} style={btnGhost(true)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Task info / notes modal ──────────────────────────────────────────── */}
+      {infoTask && (
+        <div style={overlay} onClick={closeInfoModal}>
+          <div style={{ ...modal, width:'480px', maxHeight:'86vh', overflowY:'auto', display:'flex', flexDirection:'column' }} onClick={e => { e.stopPropagation(); setColorMenuOpen(false) }}>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:'12px', marginBottom:'16px' }}>
+              <div style={{ width:'3px', height:'32px', background:`linear-gradient(180deg,${P.goldLight},${P.goldDark})`, borderRadius:'2px', flexShrink:0, marginTop:'2px' }} />
+              <div style={{ flex:1, minWidth:0 }}>
+                <h2 style={{ color:P.text, fontSize:'17px', fontWeight:'800', lineHeight:1.3, wordBreak:'break-word' }}>{infoTask.name}</h2>
+                <p style={{ fontSize:'12px', color:P.textDim, marginTop:'6px' }}>
+                  {fmtCell(infoTask.startDate,'long')} → {fmtCell(endDateOf(infoTask.startDate, infoTask.duration),'long')}
+                  <span style={{ color:P.gold, fontWeight:'700', marginLeft:'8px' }}>{infoTask.duration} días h.</span>
+                </p>
+                {infoTask.completed && (
+                  <span style={{
+                    display:'inline-block', marginTop:'8px',
+                    background:'#16a34a12', border:'1px solid #16a34a88',
+                    borderRadius:'10px', padding:'2px 8px',
+                    color:'#4ade80', fontSize:'11px', fontWeight:'600',
+                  }}>
+                    ✓ Completada{infoTask.completedAt ? ` el ${fmtCell(infoTask.completedAt, 'long')}` : ''}
+                  </span>
+                )}
+              </div>
+              <button onClick={closeInfoModal} style={{ background:'none', border:'none', color:P.textDim, cursor:'pointer', fontSize:'20px', lineHeight:1, padding:'0 2px', flexShrink:0 }}>✕</button>
+            </div>
+
+            {infoTask.notes && (
+              <div style={{ flexShrink:0, fontSize:'12px', color:'#999', background:'#151515', border:'1px solid #262626', borderRadius:'6px', padding:'8px 10px', marginBottom:'14px', whiteSpace:'pre-wrap', lineHeight:1.5 }}>
+                {infoTask.notes}
+              </div>
+            )}
+
+            <div style={{ flexShrink:0, fontSize:'11px', color:P.textDim, textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'6px' }}>
+              Notas {infoTask.noteEntries.length > 0 && `(${infoTask.noteEntries.length})`}
+            </div>
+            <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', gap:'6px', paddingRight:'2px', maxHeight:'280px', marginBottom:'14px' }}>
+              {infoTask.noteEntries.length === 0 && (
+                <p style={{ margin:'6px 0', fontSize:'12px', color:'#404040', fontStyle:'italic' }}>
+                  Sin notas aún. Sé el primero en dejar una.
+                </p>
+              )}
+              {infoTask.noteEntries.map(n => {
+                const nc = NC[n.color as NoteColor] ?? NC.purple
+                return (
+                  <div key={n.id} style={{
+                    borderLeft:`3px solid ${nc.accent}`,
+                    background: nc.bg,
+                    borderRadius:'0 4px 4px 0',
+                    padding:'6px 10px',
+                    position:'relative',
+                    flexShrink:0,
+                  }}>
+                    <div style={{ fontSize:'10px', color:'#555', marginBottom:'3px', paddingRight:'20px' }}>
+                      <span style={{ color: nc.accent, fontWeight:'700' }}>{n.author}</span>
+                      {' · '}{fmtNoteDate(n.createdAt)}
+                      <span style={{ marginLeft:'5px', fontSize:'9px', color:'#3a3a3a', fontStyle:'italic' }}>{nc.label}</span>
+                    </div>
+                    <div style={{ fontSize:'13px', color: nc.text, lineHeight:1.4 }}>{n.text}</div>
+                    {isLoggedIn && (
+                      <button
+                        onClick={() => deleteNote(infoTask.id, n.id)}
+                        style={{ position:'absolute', top:'6px', right:'8px', background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'12px', lineHeight:1, padding:'0 2px' }}
+                        title="Eliminar nota"
+                      >✕</button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Add note form */}
+            <div style={{ flexShrink:0, borderTop:'1px solid #2a2a2a', paddingTop:'10px', display:'flex', gap:'6px', alignItems:'center' }}>
+              {!isLoggedIn && (
+                <input
+                  placeholder="Tu nombre *"
+                  value={getPending(infoTask.id).author}
+                  onChange={e => setPending(infoTask.id, { author: e.target.value })}
+                  style={{ width:'96px', background:'#0c0c10', border:'1px solid #333', borderRadius:'4px', color:P.text, fontSize:'12px', padding:'6px 8px', outline:'none', flexShrink:0 }}
+                />
+              )}
+              <div style={{ position:'relative', flexShrink:0 }}>
+                <button
+                  onClick={e => { e.stopPropagation(); setColorMenuOpen(o => !o) }}
+                  title="Tipo de nota"
+                  style={{
+                    display:'flex', alignItems:'center', gap:'6px',
+                    background:'#0c0c10', border:'1px solid #333', borderRadius:'4px',
+                    padding:'6px 8px', cursor:'pointer', flexShrink:0,
+                  }}
+                >
+                  <span style={{ width:'12px', height:'12px', borderRadius:'50%', background: NC[getPending(infoTask.id).color].accent, flexShrink:0 }} />
+                  <span style={{ fontSize:'11px', color:P.textDim, whiteSpace:'nowrap' }}>{NC[getPending(infoTask.id).color].label}</span>
+                  <span style={{ fontSize:'8px', color:'#555' }}>{colorMenuOpen ? '▴' : '▾'}</span>
+                </button>
+                {colorMenuOpen && (
+                  <div style={{
+                    position:'absolute', bottom:'calc(100% + 6px)', left:0, zIndex:10,
+                    background:'#1c1c1c', border:'1px solid #3a3a3a', borderRadius:'8px',
+                    padding:'5px', display:'flex', flexDirection:'column', gap:'2px',
+                    boxShadow:'0 8px 24px rgba(0,0,0,0.45)', minWidth:'140px',
+                  }}>
+                    {(Object.keys(NC) as NoteColor[]).map(key => (
+                      <button
+                        key={key}
+                        onClick={e => { e.stopPropagation(); setPending(infoTask.id, { color: key }); setColorMenuOpen(false) }}
+                        style={{
+                          display:'flex', alignItems:'center', gap:'8px', width:'100%',
+                          background: getPending(infoTask.id).color === key ? '#2a2a2a' : 'transparent',
+                          border:'none', borderRadius:'5px', padding:'6px 8px', cursor:'pointer', textAlign:'left',
+                        }}
+                      >
+                        <span style={{ width:'11px', height:'11px', borderRadius:'50%', background: NC[key].accent, flexShrink:0 }} />
+                        <span style={{ fontSize:'12px', color:P.text, whiteSpace:'nowrap' }}>{NC[key].label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <input
+                placeholder={isLoggedIn ? 'Escribe una nota...' : 'Escribe una nota... (Enter para enviar)'}
+                value={getPending(infoTask.id).text}
+                onChange={e => setPending(infoTask.id, { text: e.target.value })}
+                onKeyDown={e => e.key === 'Enter' && addNote(infoTask)}
+                style={{ flex:1, background:'#0c0c10', border:'1px solid #333', borderRadius:'4px', color:P.text, fontSize:'12px', padding:'6px 9px', outline:'none', minWidth:0 }}
+              />
+              <button
+                onClick={() => addNote(infoTask)}
+                title="Agregar nota"
+                style={{ background:'#7c3aed', color:'#fff', border:'none', borderRadius:'4px', padding:'6px 12px', fontSize:'13px', fontWeight:'700', cursor:'pointer', flexShrink:0 }}
+              >
+                +
+              </button>
             </div>
           </div>
         </div>
